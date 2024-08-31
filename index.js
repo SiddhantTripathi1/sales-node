@@ -1,79 +1,84 @@
-const express = require('express'); // Import Express
-const fs = require('fs');           // Import File System module
-const app = express();              // Create an Express application
-const PORT = 5000;                  // Define the port number
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const cors = require('cors');
+const app = express();
+const PORT = 5000;
 
-// Helper function to calculate sales data
+// Full path to the CSV file
+const csvFilePath = path.resolve('server','sales-data.csv');
+console.log(csvFilePath);
+// Enable CORS
+app.use(cors());
+
+// Serve static files from the React app
+app.use(express.static(path.join(__dirname, 'client/build')));
+
+// Helper function to process sales data
 const processSalesData = (data) => {
-    const lines = data.split('\n');
-    const salesData = lines.map(line => line.split(','));
-
-    let totalSales = 0;
-    const monthWiseSales = {};
-    const mostPopularItems = {};
-    const mostRevenueItems = {};
-    const popularItemStats = {};
-
-    salesData.forEach(row => {
-        if (row.length < 5) return; // Skip invalid rows
-
-        const [date, sku, unitPrice, quantity, totalPrice] = row;
-        const month = date.slice(0, 7); // Get the month (YYYY-MM format)
-
-        // Update total sales
-        totalSales += parseFloat(totalPrice);
-
-        // Update month-wise sales
-        if (!monthWiseSales[month]) {
-            monthWiseSales[month] = 0;
-        }
-        monthWiseSales[month] += parseFloat(totalPrice);
-
-        // Track most popular items and their statistics
-        if (!mostPopularItems[month]) mostPopularItems[month] = {};
-        if (!mostRevenueItems[month]) mostRevenueItems[month] = {};
-
-        const qty = parseInt(quantity, 10);
-        const price = parseFloat(totalPrice);
-
-        // Most popular items (by quantity)
-        if (!mostPopularItems[month][sku]) mostPopularItems[month][sku] = 0;
-        mostPopularItems[month][sku] += qty;
-
-        // Items generating most revenue
-        if (!mostRevenueItems[month][sku]) mostRevenueItems[month][sku] = 0;
-        mostRevenueItems[month][sku] += price;
-
-        // For the most popular item, track min, max, and avg orders
-        if (!popularItemStats[sku]) popularItemStats[sku] = { min: qty, max: qty, total: qty, count: 1 };
-        else {
-            popularItemStats[sku].min = Math.min(popularItemStats[sku].min, qty);
-            popularItemStats[sku].max = Math.max(popularItemStats[sku].max, qty);
-            popularItemStats[sku].total += qty;
-            popularItemStats[sku].count += 1;
-        }
+    const lines = data.trim().split('\n');
+    const headers = lines[0].split(',');
+    const salesData = lines.slice(1).map(line => {
+        const [date, sku, unitPrice, quantity, totalPrice] = line.split(',');
+        return { date, sku, unitPrice: parseFloat(unitPrice), quantity: parseInt(quantity, 10), totalPrice: parseFloat(totalPrice) };
     });
 
-    // Determine the most popular item and items generating most revenue in each month
     const result = {
-        totalSales,
-        monthWiseSales,
-        mostPopularItems: {},
-        mostRevenueItems: {},
+        totalSales: 0,
+        monthWiseSales: {},
+        popularItems: {},
+        revenueItems: {},
         popularItemStats: {}
     };
 
-    for (const month in mostPopularItems) {
-        const maxItem = Object.keys(mostPopularItems[month]).reduce((a, b) => mostPopularItems[month][a] > mostPopularItems[month][b] ? a : b);
-        const maxRevenueItem = Object.keys(mostRevenueItems[month]).reduce((a, b) => mostRevenueItems[month][a] > mostRevenueItems[month][b] ? a : b);
+    salesData.forEach(row => {
+        const { date, sku, unitPrice, quantity, totalPrice } = row;
+        const month = new Date(date).toLocaleString('default', { month: 'long', year: 'numeric' });
+        const quantitySold = quantity;
+        const totalRevenue = totalPrice;
 
-        result.mostPopularItems[month] = { item: maxItem, quantity: mostPopularItems[month][maxItem] };
-        result.mostRevenueItems[month] = { item: maxRevenueItem, revenue: mostRevenueItems[month][maxRevenueItem] };
+        // Calculate total sales
+        result.totalSales += totalRevenue;
+
+        // Calculate month-wise sales totals
+        if (!result.monthWiseSales[month]) {
+            result.monthWiseSales[month] = 0;
+        }
+        result.monthWiseSales[month] += totalRevenue;
+
+        // Track the most popular item by quantity
+        if (!result.popularItems[month]) {
+            result.popularItems[month] = {};
+        }
+        if (!result.popularItems[month][sku]) {
+            result.popularItems[month][sku] = 0;
+        }
+        result.popularItems[month][sku] += quantitySold;
+
+        // Track items generating most revenue
+        if (!result.revenueItems[month]) {
+            result.revenueItems[month] = {};
+        }
+        if (!result.revenueItems[month][sku]) {
+            result.revenueItems[month][sku] = 0;
+        }
+        result.revenueItems[month][sku] += totalRevenue;
+    });
+
+    // Determine most popular item, min, max, and average number of orders for each month
+    for (const month in result.popularItems) {
+        const items = result.popularItems[month];
+        const maxItem = Object.keys(items).reduce((a, b) => items[a] > items[b] ? a : b);
+        const orders = Object.values(items);
+        const minOrders = Math.min(...orders);
+        const maxOrders = Math.max(...orders);
+        const avgOrders = orders.reduce((a, b) => a + b, 0) / orders.length;
+
         result.popularItemStats[month] = {
-            item: maxItem,
-            minOrders: popularItemStats[maxItem].min,
-            maxOrders: popularItemStats[maxItem].max,
-            avgOrders: popularItemStats[maxItem].total / popularItemStats[maxItem].count
+            mostPopularItem: maxItem,
+            minOrders: minOrders,
+            maxOrders: maxOrders,
+            avgOrders: avgOrders
         };
     }
 
@@ -82,14 +87,21 @@ const processSalesData = (data) => {
 
 // Endpoint to process sales data
 app.get('/api/sales-data', (req, res) => {
-    fs.readFile('./sales-data.csv', 'utf8', (err, data) => {
+    console.log('err');
+    fs.readFile(csvFilePath, 'utf8', (err, data) => {
         if (err) {
+            console.error('Error reading the CSV file:', err);
             res.status(500).json({ error: 'Failed to read data file' });
             return;
         }
         const result = processSalesData(data);
         res.json(result);
     });
+});
+
+// The "catchall" handler: for any request that doesn't match above routes, send back React's index.html file
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'client/build/index.html'));
 });
 
 // Start the server
